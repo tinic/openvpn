@@ -315,6 +315,14 @@ int aovpn_amiga_rebuild_argv(int *argc_out, char ***argv_out)
 #define AOVPN4_UNIT 1UL
 #define AOVPN4_MTU 1400U
 #define AOVPN4_IPV4 0x0800UL
+#define AOVPN4_IPV6 0x86DDUL
+
+/* IP datagram check: version 4 with a 20-byte header, or 6 with 40. */
+static int aovpn4_ip_ok(const unsigned char *b, ULONG n)
+{
+    return n <= AOVPN4_MTU &&
+           (((b[0] >> 4) == 4 && n >= 20) || ((b[0] >> 4) == 6 && n >= 40));
+}
 
 struct AovpnBridge {
     struct MsgPort *ctl_port, *rx_port, *tx_port;
@@ -392,7 +400,8 @@ static void aovpn4_arm_read(void)
 {
     struct AovpnBridge *p = &aovpn4;
     if (!p->active || p->rx_pending || p->rx_done) return;
-    p->rx->ios2_Req.io_Command = CMD_READ;
+    /* An orphan read takes IPv4 and IPv6 alike. */
+    p->rx->ios2_Req.io_Command = S2_READORPHAN;
     p->rx->ios2_PacketType = AOVPN4_IPV4;
     p->rx->ios2_Data = p->rx_packet;
     p->rx->ios2_DataLength = AOVPN4_MTU;
@@ -509,8 +518,7 @@ int aovpn_bridge_read(unsigned char *buf, int len)
     p->rx_done = 0;
     n = p->rx->ios2_DataLength;
     if (p->rx->ios2_Req.io_Error != 0) { errno = EIO; return -1; }
-    if (n < 20 || n > AOVPN4_MTU || (unsigned int)len < n ||
-        (p->rx_packet[0] >> 4) != 4)
+    if (!aovpn4_ip_ok(p->rx_packet, n) || (unsigned int)len < n)
     {
         errno = EMSGSIZE;
         aovpn4_arm_read();
@@ -526,20 +534,21 @@ int aovpn_bridge_write(const unsigned char *buf, int len)
     LONG rc;
     int i;
     if (!p->active) { errno = ENODEV; return -1; }
-    if (!buf || len < 20 || len > (int)AOVPN4_MTU || (buf[0] >> 4) != 4)
+    if (!buf || len <= 0 || !aovpn4_ip_ok(buf, (ULONG)len))
     {
         errno = EMSGSIZE;
         return -1;
     }
     p->tx->ios2_Req.io_Command = CMD_WRITE;
-    p->tx->ios2_PacketType = AOVPN4_IPV4;
+    p->tx->ios2_PacketType = (buf[0] >> 4) == 6 ? AOVPN4_IPV6 : AOVPN4_IPV4;
     p->tx->ios2_Data = (APTR)buf;
     p->tx->ios2_DataLength = (ULONG)len;
     p->tx->ios2_WireError = 0;
     for (i = 0; i < 4; ++i)
     {
-        p->tx->ios2_SrcAddr[i] = buf[12+i];
-        p->tx->ios2_DstAddr[i] = buf[16+i];
+        /* IPv4 addresses; an IPv6 write carries none */
+        p->tx->ios2_SrcAddr[i] = (buf[0] >> 4) == 4 ? buf[12+i] : 0;
+        p->tx->ios2_DstAddr[i] = (buf[0] >> 4) == 4 ? buf[16+i] : 0;
     }
     rc = DoIO((struct IORequest *)p->tx);
     if (rc || p->tx->ios2_Req.io_Error)

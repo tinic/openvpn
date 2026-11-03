@@ -25,7 +25,7 @@ open_tun(const char *dev, const char *dev_type, const char *dev_node,
     }
     tt->fd = 0; /* logical TUN only; event_t is AOVPN_TUN_EVENT (-2) */
     tt->actual_name = string_alloc("vpn.device/1", NULL);
-    msg(M_INFO, "AmiOpenVPN POC4: SANA-II vpn.device unit 1 ONLINE (1400-byte IPv4)");
+    msg(M_INFO, "AmiOpenVPN POC4: SANA-II vpn.device unit 1 ONLINE (1400-byte IPv4/IPv6)");
 }
 void
 close_tun(struct tuntap *tt, openvpn_net_ctx_t *ctx)
