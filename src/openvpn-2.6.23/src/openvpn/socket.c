@@ -58,7 +58,7 @@
  * This avoids the Amiga C runtime getaddrinfo() path (Guru 80000004).
  * gethostbyname() uses the DNS configuration of the active TCP/IP stack.
  * OpenVPN owns every returned addrinfo/sockaddr allocation as before.
- * This intentionally remains an IPv4-only compatibility shim.
+ * IPv6 is numeric only, through bsdsocket.library inet_pton().
  */
 #define AOVPN_AMIGA_MAX_DNS_IPV4 16U
 
@@ -110,6 +110,55 @@ aovpn_amiga_parse_ipv4(const char *text, uint32_t *network_address)
     return 1;
 }
 
+static int
+aovpn_amiga_addrinfo6(const char *hostname, unsigned int port,
+                      const struct addrinfo *hints, struct addrinfo **res)
+{
+    struct addrinfo *ai;
+    struct sockaddr_in6 *sin6;
+
+    if (hints && hints->ai_family == AF_INET)
+    {
+        return EAI_NONAME;
+    }
+    sin6 = (struct sockaddr_in6 *)calloc(1, sizeof(*sin6));
+    if (!sin6)
+    {
+        return EAI_MEMORY;
+    }
+    if (!hostname)
+    {
+        /* ANY for AI_PASSIVE, else loopback, as for IPv4. */
+        if (!hints || !(hints->ai_flags & AI_PASSIVE))
+        {
+            sin6->sin6_addr.s6_addr[15] = 1;
+        }
+    }
+    else if (SocketBase == NULL
+             || inet_pton(AF_INET6, (STRPTR)hostname, &sin6->sin6_addr) != 1)
+    {
+        free(sin6);
+        return EAI_NONAME;
+    }
+    ai = (struct addrinfo *)calloc(1, sizeof(*ai));
+    if (!ai)
+    {
+        free(sin6);
+        return EAI_MEMORY;
+    }
+    sin6->sin6_len = sizeof(*sin6);
+    sin6->sin6_family = AF_INET6;
+    sin6->sin6_port = htons((unsigned short)port);
+    ai->ai_family = AF_INET6;
+    ai->ai_socktype = hints ? hints->ai_socktype : 0;
+    ai->ai_protocol = hints ? hints->ai_protocol : 0;
+    ai->ai_flags = hints ? hints->ai_flags : 0;
+    ai->ai_addrlen = sizeof(*sin6);
+    ai->ai_addr = (struct sockaddr *)sin6;
+    *res = ai;
+    return 0;
+}
+
 int
 aovpn_amiga_getaddrinfo(const char *hostname, const char *servname,
                           const struct addrinfo *hints, struct addrinfo **res)
@@ -131,7 +180,8 @@ aovpn_amiga_getaddrinfo(const char *hostname, const char *servname,
     }
     *res = NULL;
 
-    if (hints && hints->ai_family != AF_INET && hints->ai_family != AF_UNSPEC)
+    if (hints && hints->ai_family != AF_INET && hints->ai_family != AF_INET6
+        && hints->ai_family != AF_UNSPEC)
     {
         return EAI_FAMILY;
     }
@@ -160,6 +210,13 @@ aovpn_amiga_getaddrinfo(const char *hostname, const char *servname,
                 return EAI_SERVICE;
             }
         }
+    }
+
+    /* IPv6: numeric addresses only, through bsdsocket.library inet_pton(). */
+    if ((hints && hints->ai_family == AF_INET6)
+        || (hostname && strchr(hostname, ':')))
+    {
+        return aovpn_amiga_addrinfo6(hostname, port, hints, res);
     }
 
     if (!hostname)
