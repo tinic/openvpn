@@ -21,6 +21,21 @@
 #ifdef mbuf_free
 #undef mbuf_free
 #endif
+/* The stack's getaddrinfo()/freeaddrinfo() (LVO -810/-804), taken before
+ * syshead.h maps the bare names to the openvpn shim in socket.c. */
+struct addrinfo;
+static inline LONG
+aovpn_bsd_getaddrinfo(const char *hostname, const char *servname,
+                      const struct addrinfo *hints, struct addrinfo **res)
+{
+    return getaddrinfo((STRPTR)hostname, (STRPTR)servname,
+                       (struct addrinfo *)hints, res);
+}
+static inline VOID
+aovpn_bsd_freeaddrinfo(struct addrinfo *ai)
+{
+    freeaddrinfo(ai);
+}
 #include <sys/time.h>
 #include <sys/socket.h>
 #include <netinet/in.h>

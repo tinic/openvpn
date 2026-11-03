@@ -1,16 +1,18 @@
 #!/bin/sh
 # Cross-build vpn.device and openvpn out of tree.
-# usage: tools/build-m68k.sh <toolchain prefix> <AmiSSL Developer dir> <build dir> <netinclude dir>
+# usage: tools/build-m68k.sh <toolchain prefix> <AmiSSL Developer dir> <build dir> [<netinclude dir>]
 # <netinclude dir> is AmiNetXDuo developer/netinclude; it goes before the NDK
-# socket headers, for AF_INET6 28.
+# socket headers, for AF_INET6 28.  Without it the toolchain NDK headers
+# apply: AF_INET6 23, sockaddr_in6 without sin6_len.
 set -e
 TC=$1; SSL=$2; OUT=$3; NET=$4
-[ -x "$TC/bin/m68k-amigaos-gcc" ] && [ -d "$SSL/include" ] && [ -n "$OUT" ] && [ -f "$NET/sys/socket.h" ] || {
-    echo "usage: $0 <toolchain prefix> <AmiSSL Developer dir> <build dir> <netinclude dir>" >&2; exit 2; }
+[ -x "$TC/bin/m68k-amigaos-gcc" ] && [ -d "$SSL/include" ] && [ -n "$OUT" ] && { [ -z "$NET" ] || [ -f "$NET/sys/socket.h" ]; } || {
+    echo "usage: $0 <toolchain prefix> <AmiSSL Developer dir> <build dir> [<netinclude dir>]" >&2; exit 2; }
 SRC=$(cd "$(dirname "$0")/.." && pwd)
 PATH=$TC/bin:$PATH; export PATH
 mkdir -p "$OUT/vpn-device" "$OUT/openvpn"
-NET=$(cd "$NET" && pwd)
+# socket.c static-asserts the AF_INET6 of the header set.
+if [ -n "$NET" ]; then NETI="-I$(cd "$NET" && pwd)"; AF6=28; else NETI=; AF6=23; fi
 OUT=$(cd "$OUT" && pwd)
 
 m68k-amigaos-gcc -include dos/dos.h -nostdlib -nostartfiles -O1 -Wall -Wextra -Werror \
@@ -27,10 +29,11 @@ sh "$O/configure" --host=m68k-unknown-amigaos \
     --disable-pkcs11 --disable-unit-tests \
     CC=m68k-amigaos-gcc AR=m68k-amigaos-ar RANLIB=m68k-amigaos-ranlib \
     ROUTE=/sbin/route IFCONFIG=/sbin/ifconfig \
-    CPPFLAGS="-D__NO_NET_API=1 -I$NET -I$SSL/include" \
+    CPPFLAGS="-D__NO_NET_API=1 $NETI -I$SSL/include" \
     CFLAGS="-O1 -m68020 -DTARGET_AMIGA -std=gnu99 -Werror=implicit-function-declaration -Werror=int-conversion" \
     OPENSSL_CFLAGS="-I$SSL/include" OPENSSL_LIBS="-L$SSL/lib/AmigaOS3 -lamisslstubs" \
     >configure.log 2>&1 || { tail -20 configure.log; exit 1; }
 # The shim goes in at make time only; configure probes break with it.
-make -C src -j"${JOBS:-4}" CPPFLAGS="-include $SRC/tools/toolchain-compat.h -D__NO_NET_API=1 -I$NET -I$SSL/include" >make.log 2>&1 || { grep -E "error:|undefined reference" make.log | head -20; exit 1; }
+make -C src -j"${JOBS:-4}" CPPFLAGS="-include $SRC/tools/toolchain-compat.h -D__NO_NET_API=1 -DAOVPN_EXPECT_AF_INET6=$AF6 $NETI -I$SSL/include" >make.log 2>&1 || { grep -E "error:|undefined reference" make.log | head -20; exit 1; }
+echo "af_inet6=$AF6"
 ls -l "$OUT/vpn-device/vpn.device" "$OUT/openvpn/src/openvpn/openvpn"
