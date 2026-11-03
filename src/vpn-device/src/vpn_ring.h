@@ -11,6 +11,7 @@
 #define VPN_PPP_IPV4_PACKET_TYPE 0x001FU
 /* PPP protocol number for IPv4 (RFC 1662); observed from MiamiDX. */
 #define VPN_PPP_IP_PROTOCOL 0x0021U
+#define VPN_IPV6_PACKET_TYPE 0x86DDU
 
 struct VpnFrame {
     unsigned short length;

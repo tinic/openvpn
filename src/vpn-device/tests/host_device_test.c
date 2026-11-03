@@ -452,6 +452,116 @@ int main(void)
         puts("PASS: FIX4 15 real PPP 0x0021 reads completed by peer IPv4 writes");
     }
 
+    /* IPv6: 0x86DD reads and writes on both units; each read gets only
+     * frames of its own class, an orphan read gets either. */
+    {
+        struct IOSana2Req r4, r6, w;
+        UBYTE s4[64], s6[64], p6[64], p4[64];
+        memset(p6, 0, sizeof(p6)); p6[0] = 0x60; p6[6] = 58;
+        memset(p4, 0, sizeof(p4)); p4[0] = 0x45; p4[9] = 1;
+
+        /* unit 0: queued IPv4 and IPv6 reads, IPv6 then IPv4 from unit 1 */
+        init_request(&r4, &io0, CMD_READ);
+        r4.ios2_PacketType = VPN_PPP_IP_PROTOCOL;
+        r4.ios2_Data = s4; r4.ios2_DataLength = sizeof(s4);
+        submit(&r4);
+        init_request(&r6, &io0, CMD_READ);
+        r6.ios2_PacketType = VPN_IPV6_PACKET_TYPE;
+        r6.ios2_Data = s6; r6.ios2_DataLength = sizeof(s6);
+        submit(&r6);
+        assert(!checkio_model(&r4.ios2_Req) && !checkio_model(&r6.ios2_Req));
+        init_request(&w, &io1, CMD_WRITE);
+        w.ios2_PacketType = VPN_IPV4_PACKET_TYPE; /* unit 1 type: the nibble decides */
+        w.ios2_Data = p6; w.ios2_DataLength = sizeof(p6);
+        submit(&w);
+        assert(!w.ios2_Req.io_Error);
+        assert(checkio_model(&r6.ios2_Req) && !r6.ios2_Req.io_Error);
+        assert(r6.ios2_PacketType == VPN_IPV6_PACKET_TYPE && memcmp(s6, p6, 64) == 0);
+        assert(!checkio_model(&r4.ios2_Req));
+        w.ios2_Data = p4;
+        submit(&w);
+        assert(checkio_model(&r4.ios2_Req) && memcmp(s4, p4, 64) == 0);
+        assert(r4.ios2_PacketType == VPN_PPP_IP_PROTOCOL);
+        puts("PASS: IPv6 unit1->unit0 goes to the 0x86DD read, IPv4 to the 0x0021 read");
+
+        /* unit 1: an orphan read learns the type, from a 0x86DD write */
+        init_request(&r6, &io1, S2_READORPHAN);
+        r6.ios2_Data = s6; r6.ios2_DataLength = sizeof(s6);
+        submit(&r6);
+        assert(!checkio_model(&r6.ios2_Req));
+        memset(s6, 0, sizeof(s6));
+        init_request(&w, &io0, CMD_WRITE);
+        w.ios2_PacketType = VPN_IPV6_PACKET_TYPE;
+        w.ios2_Data = p6; w.ios2_DataLength = sizeof(p6);
+        submit(&w);
+        assert(!w.ios2_Req.io_Error && checkio_model(&r6.ios2_Req));
+        assert(r6.ios2_PacketType == VPN_IPV6_PACKET_TYPE && memcmp(s6, p6, 64) == 0);
+        init_request(&r4, &io1, S2_READORPHAN);
+        r4.ios2_Data = s4; r4.ios2_DataLength = sizeof(s4);
+        submit(&r4);
+        w.ios2_PacketType = VPN_PPP_IP_PROTOCOL;
+        w.ios2_Data = p4;
+        submit(&w);
+        assert(checkio_model(&r4.ios2_Req) && r4.ios2_PacketType == VPN_IPV4_PACKET_TYPE);
+        puts("PASS: IPv6/IPv4 unit0->unit1 orphan reads carry 0x86DD/0x0800");
+
+        /* unit 1 only ever asked for IPv4: IPv6 is dropped, not stuck */
+        {
+            ULONG unknown = d.units[1].stats.UnknownTypesReceived;
+            init_request(&r4, &io1, CMD_READ);
+            r4.ios2_PacketType = VPN_IPV4_PACKET_TYPE;
+            r4.ios2_Data = s4; r4.ios2_DataLength = sizeof(s4);
+            submit(&r4);
+            w.ios2_PacketType = VPN_IPV6_PACKET_TYPE;
+            w.ios2_Data = p6;
+            submit(&w);
+            assert(!w.ios2_Req.io_Error && !checkio_model(&r4.ios2_Req));
+            assert(d.units[1].pending.count == 0);
+            assert(d.units[1].stats.UnknownTypesReceived == unknown + 1);
+            w.ios2_PacketType = VPN_IPV4_PACKET_TYPE;
+            w.ios2_Data = p4;
+            submit(&w);
+            assert(checkio_model(&r4.ios2_Req) && memcmp(s4, p4, 64) == 0);
+            puts("PASS: IPv4-only reader drops IPv6 and keeps IPv4 flowing");
+        }
+
+        /* unit 0 has asked for IPv6: an early IPv6 frame waits for its read */
+        init_request(&r4, &io0, CMD_READ);
+        r4.ios2_PacketType = VPN_PPP_IP_PROTOCOL;
+        r4.ios2_Data = s4; r4.ios2_DataLength = sizeof(s4);
+        submit(&r4);
+        init_request(&w, &io1, CMD_WRITE);
+        w.ios2_PacketType = VPN_IPV4_PACKET_TYPE;
+        w.ios2_Data = p6; w.ios2_DataLength = sizeof(p6);
+        submit(&w);
+        assert(!w.ios2_Req.io_Error && d.units[0].pending.count == 1);
+        assert(!checkio_model(&r4.ios2_Req));
+        memset(s6, 0, sizeof(s6));
+        init_request(&r6, &io0, CMD_READ);
+        r6.ios2_PacketType = VPN_IPV6_PACKET_TYPE;
+        r6.ios2_Data = s6; r6.ios2_DataLength = sizeof(s6);
+        submit(&r6);
+        assert(!r6.ios2_Req.io_Error && memcmp(s6, p6, 64) == 0);
+        assert(d.units[0].pending.count == 0);
+        w.ios2_Data = p4;
+        submit(&w);
+        assert(checkio_model(&r4.ios2_Req) && memcmp(s4, p4, 64) == 0);
+        puts("PASS: buffered IPv6 frame goes to a later 0x86DD read");
+
+        /* other types stay rejected */
+        init_request(&w, &io0, CMD_WRITE);
+        w.ios2_PacketType = 0x0806;
+        w.ios2_Data = p4; w.ios2_DataLength = sizeof(p4);
+        submit(&w);
+        assert(w.ios2_Req.io_Error == S2ERR_NOT_SUPPORTED);
+        init_request(&r4, &io0, CMD_READ);
+        r4.ios2_PacketType = 0x0806;
+        r4.ios2_Data = s4; r4.ios2_DataLength = sizeof(s4);
+        submit(&r4);
+        assert(r4.ios2_Req.io_Error == S2ERR_NOT_SUPPORTED);
+        puts("PASS: ARP 0x0806 still rejected");
+    }
+
     /* Closing a unit with pending read replies IOERR_ABORTED, not UAF. */
     read_packet(&io1,in);
     pre=g_replies;

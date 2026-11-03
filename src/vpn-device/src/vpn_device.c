@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause
  * vpn.device POC1: future-release SANA-II user-space IP link.
  * Unit 0 is the MiamiDX end; unit 1 is the AmiOpenVPN end.
- * A CMD_WRITE on one unit becomes one inbound IPv4 packet on its peer.
+ * A CMD_WRITE on one unit becomes one inbound IPv4 or IPv6 packet on its peer.
  * NO echo, replay, simulated faults, internal networking, or OpenVPN TLS.
  *
  * SANA-II core helpers included verbatim from Simon Dick's sana2loop
@@ -31,12 +31,12 @@
 #define STR2(x) #x
 #define STR(x) STR2(x)
 #define VPN_VERSION 0
-#define VPN_REVISION 1
+#define VPN_REVISION 2
 #define VPN_MAGIC 0x564E504F /* VNPO */
 #define VPN_BPS 10000000UL
 #define VPN_UNITS 2
 #define VPN_NAME "vpn.device"
-#define VPN_ID "$VER: vpn.device 0.1 (21.10.2026)"
+#define VPN_ID "$VER: vpn.device 0.2 (03.11.2026)"
 
 struct ExecBase *SysBase;
 
@@ -68,6 +68,7 @@ struct VpnUnit {
     UBYTE online;
     UBYTE exclusive;
     UBYTE tracked;
+    UBYTE wants; /* VPN_WANT_* classes a CMD_READ has asked for */
 };
 
 struct VpnDevice {
@@ -262,6 +263,32 @@ static BOOL ipv4_tracking_type(ULONG type)
     return type == VPN_IPV4_PACKET_TYPE || type == VPN_PPP_IPV4_PACKET_TYPE;
 }
 
+/* IPv6 0x86DD rides beside IPv4. A frame is IPv6 when its IP version
+ * nibble is 6, else IPv4 as before; a CMD_READ takes only its own class. */
+#define VPN_WANT_IPV4 1
+#define VPN_WANT_IPV6 2
+static BOOL ip_type(ULONG type)
+{
+    return ipv4_type(type) || type == VPN_IPV6_PACKET_TYPE;
+}
+
+static UBYTE type_class(ULONG type)
+{
+    return type == VPN_IPV6_PACKET_TYPE ? VPN_WANT_IPV6 : VPN_WANT_IPV4;
+}
+
+/* Caller holds Disable(). */
+static struct Node *take_read(struct VpnUnit *u, ULONG type)
+{
+    struct Node *n;
+    for (n = u->reads.lh_Head; n->ln_Succ; n = n->ln_Succ)
+        if (type_class(((struct IOSana2Req *)n)->ios2_PacketType) == type_class(type)) {
+            Remove(n);
+            return n;
+        }
+    return NULL;
+}
+
 static void complete_read(struct VpnUnit *u, struct IOSana2Req *req, struct VpnFrame *frame)
 {
     struct VpnOpen *op = (struct VpnOpen *)req->ios2_BufferManagement;
@@ -295,9 +322,17 @@ static void deliver_pending(struct VpnUnit *u)
         struct Node *n;
         struct VpnFrame *f = vpn_ring_peek(&u->pending);
         if (!f) break;
-        n = RemHead(&u->reads);
+        n = take_read(u, f->packet_type);
         if (!n) n = RemHead(&u->orphans);
-        if (!n) break;
+        if (!n) {
+            /* Keep it unless reads are queued and none of its class was
+             * ever asked for (an IPv4-only stack): it would block the FIFO. */
+            if (!u->reads.lh_Head->ln_Succ || (u->wants & type_class(f->packet_type)))
+                break;
+            vpn_ring_pop(&u->pending);
+            u->stats.UnknownTypesReceived++;
+            continue;
+        }
         complete_read(u, (struct IOSana2Req *)n, f);
         u->diag.fifo_delivered++;
         vpn_ring_pop(&u->pending);
@@ -329,7 +364,7 @@ static void do_write(struct VpnDevice *d, struct VpnUnit *u,
         return;
     }
     if (req->ios2_Req.io_Flags & SANA2IOF_RAW ||
-        !ipv4_type(req->ios2_PacketType)) {
+        !ip_type(req->ios2_PacketType)) {
         req->ios2_Req.io_Error = S2ERR_NOT_SUPPORTED;
         u->diag.reject_type_or_raw++;
         return;
@@ -349,7 +384,6 @@ static void do_write(struct VpnDevice *d, struct VpnUnit *u,
         return;
     }
     f->length = (unsigned short)len;
-    f->packet_type = VPN_IPV4_PACKET_TYPE;
     for (i = 0; i < 4; ++i) {
         f->src[i] = req->ios2_SrcAddr[i];
         f->dst[i] = req->ios2_DstAddr[i];
@@ -363,6 +397,7 @@ static void do_write(struct VpnDevice *d, struct VpnUnit *u,
         req->ios2_WireError = S2WERR_BUFF_ERROR;
         return;
     }
+    f->packet_type = (f->payload[0] >> 4) == 6 ? VPN_IPV6_PACKET_TYPE : VPN_IPV4_PACKET_TYPE;
     u->diag.write_accepted++;
     to->diag.fifo_enqueued++;
     u->stats.PacketsSent++;
@@ -483,6 +518,7 @@ vpn_close(struct Library *lib asm("a6"), struct IORequest *io asm("a1"))
         u->online = FALSE;
         u->configured = FALSE;
         u->tracked = FALSE;
+        u->wants = 0;
         vpn_ring_clear(&u->pending);
         abort_waiters(&u->reads);
         abort_waiters(&u->orphans);
@@ -526,13 +562,17 @@ vpn_beginio(struct Library *lib asm("a6"), struct IORequest *io asm("a1"))
     case CMD_READ:
     case S2_READORPHAN:
         u->diag.read_submitted++;
-        if (io->io_Command == CMD_READ && !ipv4_type(req->ios2_PacketType)) {
+        if (io->io_Command == CMD_READ && !ip_type(req->ios2_PacketType)) {
             io->io_Error = S2ERR_NOT_SUPPORTED;
             break;
         }
         if (!u->online) { io->io_Error = S2ERR_OUTOFSERVICE; break; }
         Disable();
+        if (io->io_Command == CMD_READ) u->wants |= type_class(req->ios2_PacketType);
         f = vpn_ring_peek(&u->pending);
+        if (f && io->io_Command == CMD_READ &&
+            type_class(f->packet_type) != type_class(req->ios2_PacketType))
+            f = NULL; /* queue it; deliver_pending() below sorts the FIFO */
         if (f) {
             struct VpnOpen *op = (struct VpnOpen *)req->ios2_BufferManagement;
             for (i = 0; i < 4; ++i) {
@@ -563,6 +603,7 @@ vpn_beginio(struct Library *lib asm("a6"), struct IORequest *io asm("a1"))
              * Exec's Disable nesting is balanced inside the helper. */
             safe_add_tail(io->io_Command == CMD_READ ? &u->reads : &u->orphans,
                           (struct Node *)io);
+            deliver_pending(u);
             Enable();
             if (trace_enabled) trace_event(u, AOVPN_T_READ_QUEUED, io);
             return;
