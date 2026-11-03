@@ -1,102 +1,104 @@
-<p align="center">
-  <img src="boingvpn.png" alt="AmiOpenVPN logo">
-</p>
+# AmiOpenVPN 2.6.23 for AmigaOS 68k
 
-# openvpn for AmigaOS - AI CODED
+Native IPv4 OpenVPN client using **AmiSSL v5**, an Amiga TCP/IP stack's
+`bsdsocket.library`, and the SANA-II `vpn.device`. OpenVPN's TLS and traffic
+encryption run on AmigaOS, not on the PiStorm host processor.
 
-**OpenVPN 2.6.23 for AmigaOS 68k.**
+This ZIP is a **single-source-and-binary distribution** assembled from two
+supplied milestone archives. It contains the OpenVPN 2.6.23 Amiga port source,
+the `vpn.device` source and host tests, prebuilt Amiga binaries, and setup notes.
 
-Native IPv4 OpenVPN client using **AmiSSL v5**, the TCP/IP stack's **`bsdsocket.library`**, and the SANA-II **`vpn.device`**. TLS and data-channel encryption run on the Amiga, without a Linux-side VPN daemon or proxy. Supports standard `.ovpn` profiles, UDP, TLS 1.3, AES-GCM, `tls-crypt`, hostname resolution and AmigaDOS lifecycle scripts.
+## Contents
 
-## Requirements
+| Path | Contents |
+| --- | --- |
+| `src/openvpn-2.6.23/` | Modified OpenVPN 2.6.23 source (POC6-GW1-FIX1, 27 Oct 2026) |
+| `src/vpn-device/` | SANA-II vpn.device POC2-FIX4 source, Makefile, tests and BSD notices |
+| `amiga/bin/openvpn` | Prebuilt m68k OpenVPN executable from supplied POC6 archive |
+| `amiga/DEVS/vpn.device` | Prebuilt driver from supplied POC6 archive |
+| `amiga/miamidx/` | Original MiamiDX lifecycle scripts and helpers |
+| `amiga/examples/client.ovpn.example` | Sanitized starter configuration (no credentials) |
+| `docs/` | Build, installation, stack integration, release notes and security guidance |
 
-- AmigaOS 3.1 (tested) with a fast 68k CPU; Amiga 600 + PiStorm/Emu68 is a validated setup.
-- AmiSSL v5 and a working Internet connection through a supported TCP/IP stack.
-- `openvpn`, `vpn.device`, stack-specific scripts and a valid provider `.ovpn` profile.
+## Supported configurations
 
-## TCP/IP stack compatibility
+The **client** uses standard Amiga `bsdsocket.library` and is not tied to
+MiamiDX. Network interface, routes and DNS are managed by stack-specific scripts.
 
-| Stack | Status | Notes |
+| Stack | Known state | Included integration |
 | --- | --- | --- |
-| **MiamiDX** | **Hardware validated** | Point-to-point `ptp0`, routing and DNS scripts. |
-| **AmiTCP-NG** | **Hardware validated** | `ptp0`, full tunnel and lifecycle scripts; pushed DNS update/restoration via `amitcpresolver`. |
-| **Roadshow** | **Expected compatible; validation pending** | SANA-II interface setup should be equivalent to AmiTCP-NG; route/DNS scripts use Roadshow commands. |
-| **PrismNet 1.0.8** | **Validated under WinUAE** | `NetCtl` integration; TLS 1.3, AES-256-GCM, full tunnel and pushed DNS tested. https://github.com/lainejones/PrismNet#vpn |
+| **MiamiDX** | Hardware-validated in the POC6 milestone | Original MiamiDX scripts supplied |
+| **AmiTCP-NG** | Independently hardware-validated in later work | **Not included** in these two milestone archives |
+| **Roadshow** | Intended to work similarly to AmiTCP-NG; full validation pending | **Not included** |
+| **PrismNet 1.0.8** | Tested by its developer under WinUAE with NetCtl | **Not included** |
 
-**The OpenVPN client is stack-independent.** IP addresses, routing, default-gateway handling and DNS are managed by stack-specific AmigaDOS scripts.
+Do **not** run the MiamiDX scripts unchanged on other TCP/IP stacks.
 
-## Configure the VPN interface
+## Quick start (MiamiDX)
 
-`vpn.device` provides two SANA-II units:
+1. Install **AmiSSL v5** and a functioning IPv4 TCP/IP stack.
+2. Copy `amiga/DEVS/vpn.device` to `DEVS:vpn.device`, then reboot so the
+   new resident driver is loaded.
+3. Copy `amiga/bin/openvpn`, the three scripts from `amiga/miamidx/`,
+   to one Amiga directory.
+   Assign this directory as `OPENVPN:`.
+4. In MiamiDX configure a point-to-point interface such as `ptp0` using
+   **vpn.device unit 0**, MTU 1400. Keep your regular LAN/WAN interface up.
+5. Make a working `.ovpn` file from `amiga/examples/client.ovpn.example`.
+   Supply your own server address, CA, credentials and optional client cert/key
+   and `tls-crypt` material. Review every networking command in the scripts.
+6. From an AmigaDOS Shell, once `ptp0` is available:
 
-- **Unit 0:** TCP/IP stack point-to-point interface, normally `ptp0` (PPP IPv4 packet type `0x0021`).
-- **Unit 1:** OpenVPN TUN backend (raw IPv4, `0x0800`).
+   ```text
+   Stack 262144
+   OPENVPN:openvpn --config OPENVPN:client.ovpn
+   ```
 
-Configure **unit 0** as an IPv4 point-to-point interface with **MTU 1400**, unless the VPN configuration specifies otherwise. Keep the physical Internet interface active; install VPN routes only after tunnel establishment.
+The server assigns the tunnel addresses; `10.77.0.1/10.77.0.2` belonged to a
+historical test, **not** to all OpenVPN connections. The included older MiamiDX
+scripts have assumptions about pushed DNS and routing that must be reviewed.
 
-- **MiamiDX:** configure `ptp0` as a point-to-point interface using `vpn.device` unit 0.
-- **AmiTCP-NG:** set up `DEVS:NetInterfaces/ptp0` and start it with `AddNetInterface ptp0`.
-- **Roadshow:** use the analogous `DEVS:NetInterfaces/ptp0` / `AddNetInterface` configuration; verify the options on your release.
-- **PrismNet:** manage the interface through `NetCtl` and PrismNet-specific scripts.
+See [Installation](docs/INSTALL.md) and [TCP/IP stack notes](docs/STACKS.md).
 
-Tunnel IP addresses must agree with the server's assigned/pushed configuration. No fixed IP pair is required by AmiOpenVPN.
+## How the virtual interface works
 
-## Install and configure
+- **vpn.device unit 0:** point-to-point SANA-II interface for the Amiga TCP/IP
+  stack (`ptp0`, or another stack-specific name), PPP IPv4 packet type `0x0021`.
+- **vpn.device unit 1:** opened by AmiOpenVPN as its TUN backend; raw IPv4
+  packets use protocol type `0x0800`.
+- The device itself **does not encrypt**. Encryption is handled by the
+  native OpenVPN process using AmiSSL.
 
-1. Install AmiSSL v5. Copy `vpn.device` to `DEVS:` and place the executable, profile and scripts in a directory (e.g. one assigned as `OPENVPN:`).
-2. Bring up the physical connection and configure `ptp0` on **unit 0**.
-3. Select lifecycle scripts for your TCP/IP stack and supply your provider's CA, credentials and any required client certificate/key and `tls-crypt` material.
+## Build
 
-Example `client.ovpn`:
+- **Driver:** reproducible commands and host-test instructions are in
+  [docs/BUILD.md](docs/BUILD.md). The bundled driver host tests passed during
+  this ZIP's assembly.
+- **Client:** the complete milestone source is present, but the original
+  build wrapper (`tools/build_milestone.sh` from an older milestone) is **not**
+  present in the supplied archive. The historical compiler settings and an
+  unverified Autotools starting point are documented in `docs/BUILD.md`.
+  A fresh client cross-build was **not** performed for this release ZIP.
 
-```text
-client
-proto udp
-dev tun
-remote vpn.example.org 1194
-remote-cert-tls server
-resolv-retry infinite
-nobind
-persist-key
-persist-tun
-tun-mtu 1400
-ifconfig-noexec
-route-noexec
-script-security 2
-up OPENVPN:Up.script
-route-up OPENVPN:RouteUp.script
-route-pre-down OPENVPN:RoutePreDown.script
-verb 3
-```
+## Scope / limitations
 
-**This is a template, not a complete provider profile.** Adapt server, authentication, certificates and script paths.
+Validated mode: **UDP, IPv4 TUN**, TLS/certificate authentication and AES-GCM.
+No claim is made for IPv6 tunnels, TAP bridging, DCO, unattended reconnection
+or universal DNS leak protection. Historical data points do not constitute a
+security audit. Keep VPN private keys private and never commit `.ovpn` profiles
+containing credentials.
 
-The stack-specific scripts handle:
+A Certificate Signing Request (**CSR**) was also generated locally on AmigaOS
+in later project testing, so the associated private key can remain on the Amiga.
+The CSR-generation utility is **not** among the supplied archive contents.
 
-- `Up.script`: set the tunnel interface address.
-- `RouteUp.script`: install routes, preserve the physical route to the VPN server and apply pushed DNS where supported.
-- `RoutePreDown.script`: remove VPN routes and restore network/DNS settings.
+## Licenses and provenance
 
-The hooks run through AmigaDOS `C:Execute`; OpenVPN passes local environment variables such as `ifconfig_local`, `trusted_ip`, `route_vpn_gateway`, `route_net_gateway` and `foreign_option_N`. AmiTCP-NG uses the validated `amitcpresolver` DNS workflow; PrismNet uses `NetCtl`. Roadshow's complete lifecycle remains to be verified.
+See [docs/LICENSES.md](docs/LICENSES.md) and
+[docs/RELEASE-NOTES.md](docs/RELEASE-NOTES.md). The modified OpenVPN tree keeps
+its upstream `COPYING` and copyright notices (GPLv2 and documented exceptions).
+The `vpn.device` tree retains its BSD-2-Clause third-party notices.
 
-## Run
-
-From an AmigaDOS Shell:
-
-```text
-Stack 262144
-OPENVPN:openvpn --config OPENVPN:client.ovpn
-```
-
-Verify tunnel connectivity, routes and DNS. On abnormal termination, check that routes and resolver settings have been restored. Use `verb 4`/`verb 5` for standard diagnostics or `aovpn-diagnostics` for Amiga-specific logging.
-
-## Certificates and local CSR
-
-A **Certificate Signing Request (CSR) has been generated successfully on AmigaOS itself with AmiSSL V5.**. A locally generated CSR can be submitted to a CA or VPN administrator for signing while its associated private key remains on the Amiga. Configure the resulting signed certificate and private key in the OpenVPN profile when client-certificate authentication is required.
-
-## Limitations
-
-- **IPv4 TUN over UDP** is the validated mode; no IPv6 tunnel, TAP bridging or DCO support.
-- Roadshow is not yet independently validated; PrismNet testing was conducted under WinUAE.
-- Routing, gateway discovery, DNS changes and cleanup depend on the stack-specific scripts. Comprehensive DNS leak prevention and all failure/reconnect scenarios are not guaranteed.
-- Protect private keys, verify server certificates and review scripts that change routes or firewall rules. This port has not undergone a security audit.
+**Important:** `amiga/` contains prebuilt artifacts from one milestone, and
+`src/vpn-device/` comes from a separately supplied source milestone. Their
+bit-for-bit binary/source correspondence has **not** been independently proven.

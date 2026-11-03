@@ -1,0 +1,24 @@
+# Local credentials and certificates (preserve upstream source examples)
+*.key
+*.p12
+*.pfx
+*.pem
+*.crt
+*.csr
+/client.ovpn
+/secrets/
+/local/
+# Build and debug output
+**/config.log
+**/config.status
+**/.deps/
+**/.libs/
+**/*.o
+**/*.lo
+**/*.la
+**/*.a
+/src/vpn-device/build/
+**/*.log
+*.swp
+*~
+.DS_Store

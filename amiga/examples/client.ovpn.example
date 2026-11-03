@@ -1,0 +1,22 @@
+# EXAMPLE ONLY. Supply your own server, trusted CA and authentication files.
+client
+dev tun
+proto udp
+remote vpn.example.org 1194
+remote-cert-tls server
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+tun-mtu 1400
+ifconfig-noexec
+route-noexec
+script-security 2
+up OPENVPN:Up.script
+route-up OPENVPN:RouteUp.script
+route-pre-down OPENVPN:RoutePreDown.script
+verb 3
+# ca OPENVPN:ca.crt
+# cert OPENVPN:client.crt
+# key OPENVPN:client.key
+# tls-crypt OPENVPN:tls-crypt.key
